@@ -1,0 +1,11 @@
+{
+  "name": "cactuly-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": ["apps/*"],
+  "scripts": {
+    "typecheck": "npm -ws run typecheck --if-present",
+    "build": "npm -ws run build --if-present"
+  }
+}

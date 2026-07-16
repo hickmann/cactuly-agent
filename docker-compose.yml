@@ -1,0 +1,59 @@
+# Cactuly agent — docker-compose self-hospedável.
+#
+# Requisitos: Docker Engine 24+ com Compose plugin.
+#
+# Setup: veja README.md. Resumo:
+#   1. Gere um enrollment token em https://cactuly-portal.atlasberg.workers.dev/admin > Agents
+#   2. Preencha .env (baseado em .env.example) com CACTULY_ENROLLMENT_TOKEN
+#   3. docker compose up -d
+#   4. Verifique o status em /admin > Agents (última coluna "Último ping")
+#
+# O agent-runtime faz polling outbound (5s por default) ao Cactuly SaaS.
+# Nenhuma porta é aberta pro mundo — comunicação é sempre iniciada pelo agent.
+
+name: cactuly-agent
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: cactuly-agent-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: cactuly
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD é obrigatório no .env}
+      POSTGRES_DB: cactuly
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cactuly -d cactuly"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  agent-runtime:
+    image: ghcr.io/hickmann/cactuly/agent-runtime:${AGENT_RUNTIME_TAG:-latest}
+    build:
+      context: .
+      dockerfile: apps/agent-runtime/Dockerfile
+    container_name: cactuly-agent-runtime
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      CACTULY_ENDPOINT: ${CACTULY_ENDPOINT:-https://cactuly-portal.atlasberg.workers.dev}
+      CACTULY_ENROLLMENT_TOKEN: ${CACTULY_ENROLLMENT_TOKEN:-}
+      CACTULY_POLL_MS: ${CACTULY_POLL_MS:-5000}
+      DATABASE_URL: postgresql://cactuly:${POSTGRES_PASSWORD}@postgres:5432/cactuly
+    volumes:
+      - agent-state:/data
+
+  # NOTA: no passo 7 do build-out do Cactuly, aqui entram os serviços autofix real:
+  #   worker:    ghcr.io/hickmann/autofix/worker:latest
+  #   developer: ghcr.io/hickmann/autofix/developer:latest
+  # Por enquanto o agent-runtime opera em modo stub (reporta "não integrado ainda"
+  # e serve pra validar o handshake enroll+polling+result end-to-end).
+
+volumes:
+  postgres-data:
+  agent-state:
