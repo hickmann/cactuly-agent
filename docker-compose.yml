@@ -1,15 +1,15 @@
-# Cactuly agent — docker-compose self-hospedável.
+# Cactuly agent: docker-compose self-hospedável.
 #
 # Requisitos: Docker Engine 24+ com Compose plugin.
 #
 # Setup: veja README.md. Resumo:
-#   1. Gere um enrollment token em https://cactuly-portal.atlasberg.workers.dev/admin > Agents
-#   2. Preencha .env (baseado em .env.example) com CACTULY_ENROLLMENT_TOKEN
+#   1. Gere um enrollment token em https://cactuly.com/admin > Agents
+#   2. Preencha .env (baseado em .env.example) com WORKER_ENROLLMENT_TOKEN
 #   3. docker compose up -d
 #   4. Verifique o status em /admin > Agents (última coluna "Último ping")
 #
 # O agent-runtime faz polling outbound (5s por default) ao Cactuly SaaS.
-# Nenhuma porta é aberta pro mundo — comunicação é sempre iniciada pelo agent.
+# Nenhuma porta é aberta pro mundo: comunicação é sempre iniciada pelo agent.
 
 name: cactuly-agent
 
@@ -41,18 +41,23 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      CACTULY_ENDPOINT: ${CACTULY_ENDPOINT:-https://cactuly-portal.atlasberg.workers.dev}
-      CACTULY_ENROLLMENT_TOKEN: ${CACTULY_ENROLLMENT_TOKEN:-}
+      # Nomes novos (spec). Os antigos (CACTULY_ENDPOINT/CACTULY_ENROLLMENT_TOKEN)
+      # seguem aceitos como fallback com aviso de deprecação no log.
+      CACTULY_API_URL: ${CACTULY_API_URL:-${CACTULY_ENDPOINT:-https://cactuly.com}}
+      WORKER_ENROLLMENT_TOKEN: ${WORKER_ENROLLMENT_TOKEN:-${CACTULY_ENROLLMENT_TOKEN:-}}
+      WORKER_DATA_DIRECTORY: /data
       CACTULY_POLL_MS: ${CACTULY_POLL_MS:-5000}
+      CACTULY_HEARTBEAT_MS: ${CACTULY_HEARTBEAT_MS:-30000}
       DATABASE_URL: postgresql://cactuly:${POSTGRES_PASSWORD}@postgres:5432/cactuly
     volumes:
       - agent-state:/data
 
-  # NOTA: no passo 7 do build-out do Cactuly, aqui entram os serviços autofix real:
+  # NOTA: em etapa futura, aqui entram os serviços do pipeline autofix real:
   #   worker:    ghcr.io/hickmann/autofix/worker:latest
   #   developer: ghcr.io/hickmann/autofix/developer:latest
-  # Por enquanto o agent-runtime opera em modo stub (reporta "não integrado ainda"
-  # e serve pra validar o handshake enroll+polling+result end-to-end).
+  # Por enquanto o agent-runtime executa jobs em modo stub (reporta "pipeline
+  # não conectado") mas já opera o protocolo completo: enroll, heartbeat,
+  # lease, comandos, configuração versionada e modo restrito por licença.
 
 volumes:
   postgres-data:

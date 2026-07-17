@@ -19,7 +19,7 @@ COPY --from=build /app/dist ./dist
 COPY --from=build /app/package.json ./package.json
 
 ENV NODE_ENV=production \
-    CACTULY_STATE_FILE=/data/agent-state.json
+    WORKER_DATA_DIRECTORY=/data
 
 VOLUME ["/data"]
 
