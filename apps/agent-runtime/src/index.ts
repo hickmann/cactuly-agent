@@ -163,7 +163,8 @@ async function refreshJwt(): Promise<boolean> {
 async function ensureFreshJwt(): Promise<void> {
   if (!state) return;
   const exp = jwtExp(state.jwt);
-  if (exp > 0 && exp - Date.now() / 1000 < 3600) await refreshJwt();
+  // exp 0 = token legado sem expiração: rotaciona já pra um token com prazo
+  if (exp === 0 || exp - Date.now() / 1000 < 3600) await refreshJwt();
 }
 
 // Chamada autenticada com uma tentativa de refresh no 401 (spec Fase 7)
