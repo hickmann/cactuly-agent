@@ -36,8 +36,8 @@ else
   fi
   echo "→ .env criado com POSTGRES_PASSWORD gerado."
   echo ""
-  echo "‼️  Antes de subir, edite .env e cole CACTULY_ENROLLMENT_TOKEN"
-  echo "   (gere em https://cactuly-portal.atlasberg.workers.dev/admin > Agents > Novo agent)"
+  echo "‼️  Antes de subir, edite .env e cole WORKER_ENROLLMENT_TOKEN"
+  echo "   (gere em https://cactuly.com/admin > Agents > Novo agent)"
   echo ""
   echo "   Quando estiver pronto:"
   echo "     cd $DEST && docker compose up -d && docker compose logs -f agent-runtime"
