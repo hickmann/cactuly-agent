@@ -11,7 +11,9 @@ RUN npx tsc
 
 FROM node:22-alpine AS runtime
 
-RUN apk add --no-cache tini git
+# bash e ripgrep são exigência do motor de fix (Claude Code headless);
+# USE_BUILTIN_RIPGREP=0 usa o rg do sistema (o embutido não roda em musl)
+RUN apk add --no-cache tini git bash ripgrep
 
 WORKDIR /app
 COPY --from=build /app/node_modules ./node_modules
@@ -19,7 +21,8 @@ COPY --from=build /app/dist ./dist
 COPY --from=build /app/package.json ./package.json
 
 ENV NODE_ENV=production \
-    WORKER_DATA_DIRECTORY=/data
+    WORKER_DATA_DIRECTORY=/data \
+    USE_BUILTIN_RIPGREP=0
 
 VOLUME ["/data"]
 

@@ -17,11 +17,11 @@ import { Client } from "pg";
 import { request } from "undici";
 import {
   executeJob,
-  type FixOutcome,
   type GitCredential,
   type JobPayload,
   type RepositoryInfo,
 } from "./git.js";
+import { runEngine, type AiCredential } from "./engine.js";
 
 const RUNTIME_VERSION = "0.2.0";
 
@@ -425,20 +425,10 @@ async function heartbeatLoop(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Execução local (integração real com o pipeline autofix é etapa própria do
-// build-out; o protocolo com a central já é o definitivo). O contexto traz
-// segredos efêmeros: nunca logar, nunca persistir.
+// Execução local. O contexto traz segredos efêmeros: nunca logar, nunca
+// persistir. O motor de fix (engine.ts) é o mesmo do autofix: Claude Code
+// headless via Agent SDK, com a chave BYOK da organização.
 // ---------------------------------------------------------------------------
-// Engine de fix: é aqui que o pipeline autofix entra. Enquanto stub, não
-// altera arquivo nenhum; a orquestração git ao redor já é a definitiva.
-async function runFixEngine(_workdir: string): Promise<FixOutcome> {
-  await sleep(200);
-  return {
-    changes: [],
-    engine_message: "pipeline autofix em modo stub: nenhuma correção gerada",
-  };
-}
-
 async function runLocally(
   job: Record<string, unknown>,
   context: Record<string, unknown> | null,
@@ -464,7 +454,7 @@ async function runLocally(
     (ctx.repository as RepositoryInfo | null) ?? null,
     (ctx.git as GitCredential | null) ?? null,
     DATA_DIR,
-    runFixEngine,
+    (workdir) => runEngine(workdir, (ctx.ai as AiCredential | null) ?? null, payload, () => jobState.aborted),
     () => jobState.aborted,
   );
 }
