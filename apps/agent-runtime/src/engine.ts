@@ -73,13 +73,14 @@ function buildPrompt(payload: JobPayload, input: EngineInput): string | null {
 
   return [
     "Você é o CodeShield, o motor de correção automática de código da Cactuly.",
+    "Seu único trabalho é resolver os erros apontados nos insumos abaixo. Nada além disso.",
     "Você está na raiz de um clone do repositório do cliente, na branch de trabalho correta.",
     contexto,
     "",
     secoes.join("\n\n"),
     "",
     "Regras:",
-    "- Corrija somente o que está nos insumos acima. Não procure outros problemas nem faça melhorias fora da lista.",
+    "- Resolva somente os erros listados nos insumos acima. Não procure outros problemas, não faça melhorias nem adicione funcionalidades fora da lista.",
     "- Mudanças mínimas e de alta confiança; não refatore nem reformate além do necessário.",
     "- Se um item dos insumos for falso positivo ou inseguro de corrigir, pule e explique o porquê no resumo final.",
     "- Nunca execute git commit, git push nem crie PR; a entrega acontece fora desta sessão.",
