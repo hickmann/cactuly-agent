@@ -33,6 +33,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/hickmann/cactuly-agent/main/
 
 O script baixa o `docker-compose.yml`, gera `.env` com `POSTGRES_PASSWORD` random e te instrui a colar o enrollment token.
 
+> **Requisito de rede:** o container do agente precisa apenas de saída HTTPS para três destinos: `cactuly.com` (central), o remote Git do repositório e o endpoint do provedor LLM. Nenhuma porta de entrada precisa ser aberta.
+
 ## Instalação manual
 
 ```bash
