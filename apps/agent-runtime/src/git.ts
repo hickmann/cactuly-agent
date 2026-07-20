@@ -24,7 +24,12 @@ export type JobPayload = {
   pr_number?: number | null;
   branch?: string | null;
   notes?: string | null;
+  findings?: unknown[] | null;
 };
+
+// Insumos coletados pela orquestração e entregues ao motor de fix; o motor
+// só corrige o que veio de insumo, nunca caça problemas por conta própria.
+export type EngineInput = { pr_comments: string[] };
 
 export type FixChange = { file: string; summary: string };
 
@@ -123,7 +128,7 @@ export async function executeJob(
   repository: RepositoryInfo | null,
   cred: GitCredential | null,
   dataDir: string,
-  runEngine: (workdir: string) => Promise<FixOutcome>,
+  runEngine: (workdir: string, input: EngineInput) => Promise<FixOutcome>,
   isAborted: () => boolean,
 ): Promise<JobResult> {
   if (!repository)
@@ -143,6 +148,7 @@ export async function executeJob(
   // Branch de trabalho e branch base do clone
   let workBranch = payload.branch ?? null;
   let baseBranch = repository.default_branch || "main";
+  const engineInput: EngineInput = { pr_comments: [] };
   if (mode === "existing_pr" && pr) {
     const info = await gh(cred, "GET", `/repos/${pr.owner}/${pr.repo}/pulls/${pr.number}`);
     if (info.status !== 200)
@@ -150,6 +156,23 @@ export async function executeJob(
     if (!workBranch) workBranch = String(info.data?.head?.ref ?? "");
     baseBranch = String(info.data?.base?.ref ?? baseBranch);
     if (!workBranch) return { status: "failed", message: "PR sem branch de origem identificável" };
+
+    // Comentários do PR são insumo do motor: gerais e de linha, ignorando os
+    // do próprio CodeShield pra não realimentar o que ele mesmo escreveu
+    const [ic, rc] = await Promise.all([
+      gh(cred, "GET", `/repos/${pr.owner}/${pr.repo}/issues/${pr.number}/comments?per_page=50`),
+      gh(cred, "GET", `/repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/comments?per_page=50`),
+    ]);
+    const fmt = (cm: any): string => {
+      const loc = cm?.path ? `${cm.path}${cm.line ? `:${cm.line}` : ""} — ` : "";
+      return `${loc}${cm?.user?.login ?? "?"}: ${String(cm?.body ?? "").trim()}`;
+    };
+    engineInput.pr_comments = [
+      ...(Array.isArray(ic.data) ? ic.data : []),
+      ...(Array.isArray(rc.data) ? rc.data : []),
+    ]
+      .filter((cm: any) => String(cm?.body ?? "").trim() && !String(cm?.body ?? "").startsWith("## CodeShield"))
+      .map(fmt);
   }
   const cloneBranch = mode === "new_pr" ? baseBranch : workBranch!;
   if (mode === "new_pr") workBranch = `fix/codeshield-${jobId.slice(0, 8)}`;
@@ -173,7 +196,7 @@ export async function executeJob(
     if (mode === "new_pr") await git(null, workdir, "checkout", "-b", workBranch!);
     if (isAborted()) return { status: "failed", message: "job cancelado pela central" };
 
-    const outcome = await runEngine(workdir);
+    const outcome = await runEngine(workdir, engineInput);
     if (isAborted()) return { status: "failed", message: "job cancelado pela central" };
 
     const dirty = await git(null, workdir, "status", "--porcelain");
