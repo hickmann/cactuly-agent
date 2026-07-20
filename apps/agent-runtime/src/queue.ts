@@ -47,6 +47,10 @@ const JOB_COLUMNS =
   "id, status, payload, result, last_error, attempt_count, max_attempts, " +
   "created_at::text as created_at, finished_at::text as finished_at";
 
+// Variante qualificada pro RETURNING do claim (o CTE candidato também expõe
+// id/attempt_count/max_attempts; sem prefixo o Postgres acusa ambiguidade)
+const JOB_COLUMNS_J = JOB_COLUMNS.replace(/(^|, )(\w)/g, "$1j.$2");
+
 export class LocalQueue {
   private pool: Pool;
   private workerId: string;
@@ -102,7 +106,7 @@ export class LocalQueue {
            updated_at = now()
          from candidato c
          where j.id = c.id
-         returning ${JOB_COLUMNS}`,
+         returning ${JOB_COLUMNS_J}`,
         [this.workerId, leaseSeconds],
       );
       const job = r.rows[0] as LocalJob | undefined;
