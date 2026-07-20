@@ -22,8 +22,10 @@ import {
   type RepositoryInfo,
 } from "./git.js";
 import { runEngine, type AiCredential } from "./engine.js";
+import { LocalQueue, type LocalJob } from "./queue.js";
+import { startLocalApi } from "./localapi.js";
 
-const RUNTIME_VERSION = "0.2.0";
+const RUNTIME_VERSION = "0.3.0";
 
 // ---------------------------------------------------------------------------
 // Bootstrap (spec 576-580): três variáveis + DATABASE_URL da infra local.
@@ -96,6 +98,11 @@ let stopping = false;
 
 const metrics = { jobs_ok: 0, jobs_fail: 0 };
 const runningJobs = new Map<string, { aborted: boolean }>();
+
+// Fila local (modos local/custom). Reconstruída quando o modo muda ou quando
+// a conexão quebra (no custom isso força refetch do DSN na central).
+let localQueue: LocalQueue | null = null;
+let localQueueBuiltFor: string | null = null;
 
 async function loadJson<T>(path: string): Promise<T | null> {
   try {
@@ -397,11 +404,18 @@ async function heartbeatLoop(): Promise<void> {
     try {
       await ensureFreshJwt();
       if (!authFailed) {
+        // Agregados da fila local viajam em capabilities.labels (a central
+        // persiste labels; chaves soltas em capabilities são descartadas)
+        let caps: Record<string, unknown> = capabilities();
+        if (queueMode() !== "cactuly" && localQueue) {
+          const agg = await localQueue.aggregates().catch(() => null);
+          if (agg) caps = { ...caps, labels: { queue: { mode: queueMode(), ...agg } } };
+        }
         const r = await api("POST", "/api/agent/heartbeat", {
           version: RUNTIME_VERSION,
           status: workerStatus,
           running_jobs: runningJobs.size,
-          capabilities: capabilities(),
+          capabilities: caps,
           metrics: { ...metrics },
         });
         if (r.status === 200) {
@@ -515,6 +529,135 @@ async function runJob(data: { job: Record<string, unknown>; context: Record<stri
   }
 }
 
+// ---------------------------------------------------------------------------
+// Fila local (spec: super admin define queue_mode por organização).
+//   cactuly → fila central (comportamento clássico)
+//   local   → Postgres do próprio compose vira a fila
+//   custom  → Postgres do cliente; DSN chega selado da central e vive só
+//             em memória (nunca em disco)
+// Nos modos local/custom o job nasce e morre na rede do cliente; da central
+// vêm apenas credenciais efêmeras via /execution-context.
+// ---------------------------------------------------------------------------
+const LOCAL_LEASE_SECONDS = 300;
+
+function queueMode(): string {
+  return String(cfgValue("queue_mode", "cactuly"));
+}
+
+async function dropLocalQueue(): Promise<void> {
+  if (localQueue) {
+    const q = localQueue;
+    localQueue = null;
+    localQueueBuiltFor = null;
+    await q.close().catch(() => {});
+  }
+}
+
+async function ensureLocalQueue(): Promise<LocalQueue | null> {
+  const mode = queueMode();
+  if (mode === "cactuly") {
+    if (localQueue) {
+      console.log("[cactuly] modo cactuly ativo; fechando fila local");
+      await dropLocalQueue();
+    }
+    return null;
+  }
+  if (localQueue && localQueueBuiltFor === mode) return localQueue;
+  await dropLocalQueue();
+
+  let dsn: string;
+  if (mode === "local") {
+    dsn = DATABASE_URL!;
+  } else {
+    const r = await api("GET", "/api/agent/queue-db").catch(() => ({ status: 0, data: null as any }));
+    if (r.status !== 200 || typeof r.data?.dsn !== "string") {
+      console.warn(`[cactuly] modo custom sem DSN disponível (HTTP ${r.status}); configure o banco da fila no painel`);
+      return null;
+    }
+    dsn = r.data.dsn; // só em memória, nunca em disco
+  }
+
+  const q = new LocalQueue(dsn, state?.agent_id ?? "worker");
+  try {
+    await q.init();
+  } catch (e) {
+    console.warn(`[cactuly] fila ${mode} indisponível: ${(e as Error).message}`);
+    await q.close().catch(() => {});
+    return null;
+  }
+  localQueue = q;
+  localQueueBuiltFor = mode;
+  console.log(`[cactuly] fila local pronta (modo ${mode})`);
+  return q;
+}
+
+async function runLocalJob(q: LocalQueue, job: LocalJob): Promise<void> {
+  const jobId = job.id;
+  const jobState = { aborted: false };
+  runningJobs.set(jobId, jobState);
+
+  const leaseTimer = setInterval(async () => {
+    const ok = await q.renewLease(jobId, LOCAL_LEASE_SECONDS).catch(() => false);
+    if (!ok) {
+      jobState.aborted = true;
+      console.warn(`[cactuly] lease local do job ${jobId} perdido; abortando execução`);
+      clearInterval(leaseTimer);
+    }
+  }, (LOCAL_LEASE_SECONDS / 2) * 1000);
+
+  try {
+    // Só credenciais entram na rede do cliente: chamada efêmera à central
+    // monta o contexto (git + chave de IA). Dados do job não saem daqui.
+    const payload = job.payload ?? {};
+    const rc = await api("POST", "/api/agent/execution-context", {
+      remote_url: String(payload.remote_url ?? ""),
+    }).catch(() => ({ status: 0, data: null as any }));
+    const context = (rc.data?.context ?? null) as Record<string, unknown> | null;
+
+    let result: {
+      status: "success" | "partial" | "failed";
+      pr_url?: string;
+      message?: string;
+      findings_total?: number;
+      findings_fixed?: number;
+    };
+    if (!context) {
+      result = {
+        status: "failed",
+        message: `contexto de execução indisponível na central (HTTP ${rc.status}): ${JSON.stringify(rc.data?.error ?? null)}`,
+      };
+    } else {
+      result = await runLocally({ id: jobId, payload }, context, jobState).catch((e) => ({
+        status: "failed" as const,
+        message: `erro na execução: ${(e as Error).message}`,
+      }));
+    }
+
+    clearInterval(leaseTimer);
+    if (!jobState.aborted) {
+      await q
+        .report(
+          jobId,
+          result.status === "failed" ? "failed" : "completed",
+          result as unknown as Record<string, unknown>,
+          result.status === "failed" ? (result.message ?? null) : null,
+        )
+        .catch((e) => console.error(`[cactuly] report local do job ${jobId} falhou: ${(e as Error).message}`));
+      if (result.status === "success") metrics.jobs_ok++;
+      else metrics.jobs_fail++;
+      console.log(`[cactuly] job local ${jobId} → ${result.status}`);
+    }
+  } finally {
+    clearInterval(leaseTimer);
+    runningJobs.delete(jobId);
+    await maybeApplyPendingDrain();
+    if (restartWhenIdle && runningJobs.size === 0) {
+      console.log("[cactuly] fila local vazia; saindo para restart (docker recria o container)");
+      process.exit(0);
+    }
+  }
+}
+
 function canReserve(): boolean {
   if (authFailed || revoked || stopping) return false;
   if (workerStatus !== "active") return false;
@@ -532,14 +675,30 @@ async function jobLoop(): Promise<void> {
       continue;
     }
     try {
-      const r = await api("GET", "/api/agent/jobs/next");
-      if (r.status === 200 && r.data?.job) {
-        // Não aguarda: permite concorrência até max_concurrent_jobs
-        void runJob(r.data);
-        continue;
+      if (queueMode() === "cactuly") {
+        await dropLocalQueue();
+        const r = await api("GET", "/api/agent/jobs/next");
+        if (r.status === 200 && r.data?.job) {
+          // Não aguarda: permite concorrência até max_concurrent_jobs
+          void runJob(r.data);
+          continue;
+        }
+        if (r.status === 403)
+          console.warn("[cactuly] reserva recusada pela central (licença); aguardando heartbeat");
+      } else {
+        const q = await ensureLocalQueue();
+        if (q) {
+          const job = await q.claimNext(LOCAL_LEASE_SECONDS).catch(async (e) => {
+            console.warn(`[cactuly] claim na fila local falhou: ${(e as Error).message}`);
+            await dropLocalQueue(); // reconecta (e refaz o fetch do DSN no custom)
+            return null;
+          });
+          if (job) {
+            void runLocalJob(q, job);
+            continue;
+          }
+        }
       }
-      if (r.status === 403)
-        console.warn("[cactuly] reserva recusada pela central (licença); aguardando heartbeat");
     } catch (err) {
       console.warn(`[cactuly] poll de jobs falhou: ${(err as Error).message}`);
     }
@@ -576,6 +735,12 @@ async function main() {
     console.log(`[cactuly] configuração v${cached.version} carregada do cache local`);
   }
   logRestrictedTransition();
+
+  startLocalApi({
+    queueMode,
+    getQueue: () => localQueue,
+    maxAttempts: () => Number(cfgValue("retry_max_attempts", 3)) || 3,
+  });
 
   console.log(`[cactuly] central: ${API_URL} (poll ${POLL_MS}ms, heartbeat ${HEARTBEAT_MS}ms)`);
   await Promise.all([heartbeatLoop(), jobLoop()]);
