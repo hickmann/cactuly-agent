@@ -454,7 +454,8 @@ async function runLocally(
     (ctx.repository as RepositoryInfo | null) ?? null,
     (ctx.git as GitCredential | null) ?? null,
     DATA_DIR,
-    (workdir) => runEngine(workdir, (ctx.ai as AiCredential | null) ?? null, payload, () => jobState.aborted),
+    (workdir, engineInput) =>
+      runEngine(workdir, (ctx.ai as AiCredential | null) ?? null, payload, engineInput, () => jobState.aborted),
     () => jobState.aborted,
   );
 }
