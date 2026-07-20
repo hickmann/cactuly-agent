@@ -11,7 +11,7 @@ RUN npx tsc
 
 FROM node:22-alpine AS runtime
 
-RUN apk add --no-cache tini
+RUN apk add --no-cache tini git
 
 WORKDIR /app
 COPY --from=build /app/node_modules ./node_modules

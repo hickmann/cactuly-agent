@@ -15,6 +15,13 @@ import os from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
 import { Client } from "pg";
 import { request } from "undici";
+import {
+  executeJob,
+  type FixOutcome,
+  type GitCredential,
+  type JobPayload,
+  type RepositoryInfo,
+} from "./git.js";
 
 const RUNTIME_VERSION = "0.2.0";
 
@@ -422,6 +429,16 @@ async function heartbeatLoop(): Promise<void> {
 // build-out; o protocolo com a central já é o definitivo). O contexto traz
 // segredos efêmeros: nunca logar, nunca persistir.
 // ---------------------------------------------------------------------------
+// Engine de fix: é aqui que o pipeline autofix entra. Enquanto stub, não
+// altera arquivo nenhum; a orquestração git ao redor já é a definitiva.
+async function runFixEngine(_workdir: string): Promise<FixOutcome> {
+  await sleep(200);
+  return {
+    changes: [],
+    engine_message: "pipeline autofix em modo stub: nenhuma correção gerada",
+  };
+}
+
 async function runLocally(
   job: Record<string, unknown>,
   context: Record<string, unknown> | null,
@@ -439,12 +456,17 @@ async function runLocally(
       `git=${(ctx.git as Record<string, unknown> | null)?.kind ?? "ausente"} ` +
       `repo=${(ctx.repository as Record<string, unknown> | null)?.id ?? "n/a"}`,
   );
-  await sleep(200);
   if (jobState.aborted) return { status: "failed", message: "job cancelado pela central" };
-  return {
-    status: "failed",
-    message: "agent-runtime em modo stub: pipeline autofix ainda não conectado",
-  };
+  const payload = (job.payload ?? {}) as JobPayload;
+  return executeJob(
+    String(job.id),
+    payload,
+    (ctx.repository as RepositoryInfo | null) ?? null,
+    (ctx.git as GitCredential | null) ?? null,
+    DATA_DIR,
+    runFixEngine,
+    () => jobState.aborted,
+  );
 }
 
 // ---------------------------------------------------------------------------
