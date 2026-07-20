@@ -18,8 +18,8 @@ Sua infra                         Cactuly SaaS
 ```
 
 - **postgres**: Postgres 16 local. Guarda `pg-boss` (fila interna) e o histórico de execução (`agent_runs`, `tool_calls`). **Nunca sai da sua infra.**
-- **agent-runtime**: ponte com o Cactuly. Faz enroll na inicialização, salva o estado em `/data/agent-state.json`, renova o próprio JWT antes de expirar, envia heartbeat a cada 30s, sincroniza configuração versionada (com cache local pra operar em queda da central) e executa comandos remotos de uma lista fechada (pause, resume, drain, cancel_job, etc). O runtime **não executa shell**: todo comando é código próprio.
-- **worker + developer** (próxima etapa): rodam o pipeline autofix real, remedeiam o código com um agente Claude, commitam e abrem PR.
+- **agent-runtime**: ponte com o Cactuly. Faz enroll na inicialização, salva o estado em `/data/agent-state.json`, renova o próprio JWT antes de expirar, envia heartbeat a cada 30s, sincroniza configuração versionada (com cache local para operar em caso de queda da central) e executa comandos remotos de uma lista fechada (pause, resume, drain, cancel_job, etc). O runtime **não executa shell**: todo comando é código próprio.
+- **worker + developer** (próxima etapa): rodam o pipeline autofix real, remediam o código com um agente Claude, commitam e abrem PR.
 
 Segredos (chave LLM BYOK, credencial Git) são configurados no Cactuly SaaS via UI, criptografados no cofre (Supabase) e entregues **por job**, no `context` de `GET /api/agent/jobs/next`, apenas pra este agent enrolled. Cada entrega fica registrada em log de acesso. Nada fica plain-text no Cactuly nem em disco no agent.
 
