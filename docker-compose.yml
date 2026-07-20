@@ -49,15 +49,20 @@ services:
       CACTULY_POLL_MS: ${CACTULY_POLL_MS:-5000}
       CACTULY_HEARTBEAT_MS: ${CACTULY_HEARTBEAT_MS:-30000}
       DATABASE_URL: postgresql://cactuly:${POSTGRES_PASSWORD}@postgres:5432/cactuly
+      # API local de jobs (modos de fila local/custom). Sem token, fica desligada.
+      CACTULY_LOCAL_API_TOKEN: ${CACTULY_LOCAL_API_TOKEN:-}
+      CACTULY_LOCAL_API_PORT: ${CACTULY_LOCAL_API_PORT:-8484}
+    ports:
+      # API local de jobs, exposta só no loopback do host. Ajuste se quiser
+      # servir pra outras máquinas da rede interna do cliente.
+      - "127.0.0.1:${CACTULY_LOCAL_API_PORT:-8484}:${CACTULY_LOCAL_API_PORT:-8484}"
     volumes:
       - agent-state:/data
 
-  # NOTA: em etapa futura, aqui entram os serviços do pipeline autofix real:
-  #   worker:    ghcr.io/hickmann/autofix/worker:latest
-  #   developer: ghcr.io/hickmann/autofix/developer:latest
-  # Por enquanto o agent-runtime executa jobs em modo stub (reporta "pipeline
-  # não conectado") mas já opera o protocolo completo: enroll, heartbeat,
-  # lease, comandos, configuração versionada e modo restrito por licença.
+  # O agent-runtime executa o motor de fix embutido (Claude Code headless via
+  # Agent SDK) com credenciais efêmeras da central. A fila pode ser a central
+  # (modo cactuly), o Postgres deste compose (modo local) ou um Postgres do
+  # cliente (modo custom); quem define o modo é o super admin no painel.
 
 volumes:
   postgres-data:
