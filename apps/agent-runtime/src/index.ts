@@ -399,6 +399,25 @@ function capabilities() {
   };
 }
 
+// Jobs das filas local/custom contam na central (jobs/mês por organização):
+// cada evento terminal fica no outbox do Postgres local e é enviado depois do
+// heartbeat. Central offline = evento espera; envio é idempotente por job.
+async function flushUsageOutbox(): Promise<void> {
+  if (!localQueue) return;
+  try {
+    const pending = await localQueue.usagePending(100);
+    if (pending.length === 0) return;
+    const r = await api("POST", "/api/agent/usage", { events: pending });
+    const accepted = Array.isArray(r.data?.accepted) ? (r.data.accepted as string[]) : [];
+    if (r.status === 200 && accepted.length > 0) {
+      await localQueue.usageMarkSent(accepted);
+      console.log(`[cactuly] uso reportado à central: ${accepted.length} job(s)`);
+    }
+  } catch (err) {
+    console.warn(`[cactuly] envio de uso adiado: ${(err as Error).message}`);
+  }
+}
+
 async function heartbeatLoop(): Promise<void> {
   while (!stopping) {
     try {
@@ -425,6 +444,7 @@ async function heartbeatLoop(): Promise<void> {
           if (typeof r.data?.config_version === "number" && r.data.config_version !== appliedVersion && !pendingDrainApply)
             await syncConfiguration();
           if ((r.data?.commands_pending ?? 0) > 0) await processCommands();
+          await flushUsageOutbox();
         }
       } else {
         // Tenta recuperar a credencial periodicamente
@@ -440,8 +460,8 @@ async function heartbeatLoop(): Promise<void> {
 
 // ---------------------------------------------------------------------------
 // Execução local. O contexto traz segredos efêmeros: nunca logar, nunca
-// persistir. O motor de fix (engine.ts) é o mesmo do autofix: Claude Code
-// headless via Agent SDK, com a chave BYOK da organização.
+// persistir. O motor de fix (engine.ts) é o mesmo do autofix: sessão headless
+// via Agent SDK, com a chave BYOK da organização.
 // ---------------------------------------------------------------------------
 async function runLocally(
   job: Record<string, unknown>,
@@ -594,6 +614,7 @@ async function ensureLocalQueue(): Promise<LocalQueue | null> {
 async function runLocalJob(q: LocalQueue, job: LocalJob): Promise<void> {
   const jobId = job.id;
   const jobState = { aborted: false };
+  const startedAt = new Date().toISOString();
   runningJobs.set(jobId, jobState);
 
   const leaseTimer = setInterval(async () => {
@@ -641,6 +662,7 @@ async function runLocalJob(q: LocalQueue, job: LocalJob): Promise<void> {
           result.status === "failed" ? "failed" : "completed",
           result as unknown as Record<string, unknown>,
           result.status === "failed" ? (result.message ?? null) : null,
+          startedAt,
         )
         .catch((e) => console.error(`[cactuly] report local do job ${jobId} falhou: ${(e as Error).message}`));
       if (result.status === "success") metrics.jobs_ok++;

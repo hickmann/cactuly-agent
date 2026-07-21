@@ -24,6 +24,14 @@ export type QueueAggregates = {
   dead_letter: number;
 };
 
+// Evento de uso pendente de envio pra central (só metadados, nunca conteúdo)
+export type UsageEvent = {
+  local_job_id: string;
+  status: string;
+  started_at: string | null;
+  finished_at: string | null;
+};
+
 const SCHEMA = `
 create table if not exists codeshield_jobs (
   id uuid primary key default gen_random_uuid(),
@@ -41,6 +49,16 @@ create table if not exists codeshield_jobs (
   finished_at timestamptz
 );
 create index if not exists codeshield_jobs_claim_idx on codeshield_jobs (status, created_at);
+create table if not exists codeshield_usage_outbox (
+  local_job_id uuid primary key,
+  status text not null check (status in ('completed','failed','dead_letter','cancelled')),
+  started_at timestamptz,
+  finished_at timestamptz,
+  created_at timestamptz not null default now(),
+  sent_at timestamptz
+);
+create index if not exists codeshield_usage_outbox_pending_idx
+  on codeshield_usage_outbox (created_at) where sent_at is null;
 `;
 
 const JOB_COLUMNS =
@@ -111,7 +129,10 @@ export class LocalQueue {
       );
       const job = r.rows[0] as LocalJob | undefined;
       if (!job) return null;
-      if (job.status === "dead_letter") continue;
+      if (job.status === "dead_letter") {
+        await this.usageAdd(job.id, "dead_letter", null, new Date().toISOString());
+        continue;
+      }
       return job;
     }
     return null;
@@ -135,18 +156,57 @@ export class LocalQueue {
 
   // Terminal e idempotente: só transiciona a partir de reserved/running do
   // próprio worker; qualquer outro estado é no-op (result tardio descartado).
+  // A transição real também alimenta o outbox de uso (contagem de jobs/mês
+  // na central; report duplicado não gera evento duplicado).
   async report(
     jobId: string,
     status: "completed" | "failed",
     result: Record<string, unknown> | null,
     lastError: string | null,
+    startedAt: string | null = null,
   ): Promise<void> {
-    await this.pool.query(
+    const r = await this.pool.query(
       `update codeshield_jobs set
          status = $3, result = $4::jsonb, last_error = $5,
          lease_expires_at = null, finished_at = now(), updated_at = now()
        where id = $1 and reserved_by = $2 and status in ('reserved','running')`,
       [jobId, this.workerId, status, result ? JSON.stringify(result) : null, lastError],
+    );
+    if (r.rowCount === 1)
+      await this.usageAdd(jobId, status, startedAt, new Date().toISOString());
+  }
+
+  private async usageAdd(
+    localJobId: string,
+    status: string,
+    startedAt: string | null,
+    finishedAt: string | null,
+  ): Promise<void> {
+    await this.pool
+      .query(
+        `insert into codeshield_usage_outbox (local_job_id, status, started_at, finished_at)
+         values ($1, $2, $3, $4)
+         on conflict (local_job_id) do nothing`,
+        [localJobId, status, startedAt, finishedAt],
+      )
+      .catch(() => {}); // medição nunca derruba a execução do job
+  }
+
+  async usagePending(limit = 100): Promise<UsageEvent[]> {
+    const r = await this.pool.query(
+      `select local_job_id, status, started_at::text as started_at, finished_at::text as finished_at
+       from codeshield_usage_outbox where sent_at is null
+       order by created_at limit $1`,
+      [Math.min(Math.max(1, limit), 100)],
+    );
+    return r.rows as UsageEvent[];
+  }
+
+  async usageMarkSent(localJobIds: string[]): Promise<void> {
+    if (localJobIds.length === 0) return;
+    await this.pool.query(
+      `update codeshield_usage_outbox set sent_at = now() where local_job_id = any($1::uuid[])`,
+      [localJobIds],
     );
   }
 
