@@ -10,7 +10,7 @@
 // credencial BYOK persistida. Segredos chegam só no contexto efêmero de cada
 // job e vivem apenas em memória durante a execução.
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash, createHmac, randomBytes } from "node:crypto";
 import os from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
 import { Client } from "pg";
@@ -52,8 +52,10 @@ if (!DATABASE_URL) {
   console.error("[cactuly] Env DATABASE_URL é obrigatório");
   process.exit(1);
 }
-const POLL_MS = Number(process.env.CACTULY_POLL_MS ?? 5000);
-const HEARTBEAT_MS = Number(process.env.CACTULY_HEARTBEAT_MS ?? 30000);
+// Valores de partida; a central pode ajustar via poll_interval_seconds /
+// heartbeat_interval_seconds nas respostas de /jobs/next e /heartbeat.
+let POLL_MS = Number(process.env.CACTULY_POLL_MS ?? 5000);
+let HEARTBEAT_MS = Number(process.env.CACTULY_HEARTBEAT_MS ?? 30000);
 
 const STATE_FILE = `${DATA_DIR}/agent-state.json`;
 const CONFIG_CACHE_FILE = `${DATA_DIR}/config-cache.json`;
@@ -74,6 +76,7 @@ type AgentState = {
   organization_id: string;
   name: string;
   jwt: string;
+  signing_secret?: string;
   license?: License | null;
   license_synced_at?: string | null;
 };
@@ -119,18 +122,52 @@ async function saveState(): Promise<void> {
 // ---------------------------------------------------------------------------
 // HTTP com JWT + refresh (spec 189: credencial expira; renovar antes do exp)
 // ---------------------------------------------------------------------------
-type ApiResponse = { status: number; data: any };
+type ApiResponse = { status: number; data: any; headers: Record<string, string> };
+
+// Assinatura HMAC anti-replay (espelha apps/portal/src/signing.ts):
+// HMAC(secret, method + "\n" + path + "\n" + timestamp + "\n" + nonce + "\n" + bodyHash).
+// Sem signing_secret salvo (worker antigo, enrolled antes desta versão), a
+// requisição sai sem os headers — a central em modo dual só loga e segue.
+function signRequest(
+  secret: string,
+  method: string,
+  path: string,
+  bodyRaw: string,
+): { timestamp: string; nonce: string; signature: string } {
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  const nonce = randomBytes(18).toString("base64url");
+  const bodyForHash = method === "GET" || method === "HEAD" ? "" : bodyRaw;
+  const bodyHash = createHash("sha256").update(bodyForHash).digest("hex");
+  const message = `${method.toUpperCase()}\n${path}\n${timestamp}\n${nonce}\n${bodyHash}`;
+  const signature = createHmac("sha256", secret).update(message).digest("hex");
+  return { timestamp, nonce, signature };
+}
 
 async function rawRequest(method: string, path: string, token: string, body?: unknown): Promise<ApiResponse> {
+  const bodyRaw = body !== undefined ? JSON.stringify(body) : "";
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${token}`,
+    ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+  };
+  if (state?.signing_secret) {
+    const { timestamp, nonce, signature } = signRequest(state.signing_secret, method, path, bodyRaw);
+    headers["X-Agent-Timestamp"] = timestamp;
+    headers["X-Agent-Nonce"] = nonce;
+    headers["X-Agent-Signature"] = signature;
+  }
   const res = await request(`${API_URL}${path}`, {
     method: method as "GET" | "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
-    },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
+    headers,
+    body: body !== undefined ? bodyRaw : undefined,
   });
-  if (res.statusCode === 204) return { status: 204, data: null };
+  const resHeaders: Record<string, string> = {};
+  for (const [k, v] of Object.entries(res.headers)) resHeaders[k] = Array.isArray(v) ? v[0]! : String(v ?? "");
+  if (res.statusCode === 429) {
+    const retryAfter = Math.max(1, Number(resHeaders["retry-after"]) || 60);
+    console.warn(`[cactuly] 429 (rate limit) de ${path}; aguardando ${retryAfter}s`);
+    await sleep(retryAfter * 1000);
+  }
+  if (res.statusCode === 204) return { status: 204, data: null, headers: resHeaders };
   const text = await res.body.text();
   let data: any = null;
   try {
@@ -138,7 +175,7 @@ async function rawRequest(method: string, path: string, token: string, body?: un
   } catch {
     data = text;
   }
-  return { status: res.statusCode, data };
+  return { status: res.statusCode, data, headers: resHeaders };
 }
 
 function jwtExp(jwt: string): number {
@@ -183,12 +220,12 @@ async function ensureFreshJwt(): Promise<void> {
 
 // Chamada autenticada com uma tentativa de refresh no 401 (spec Fase 7)
 async function api(method: string, path: string, body?: unknown): Promise<ApiResponse> {
-  if (!state) return { status: 0, data: null };
+  if (!state) return { status: 0, data: null, headers: {} };
   let r = await rawRequest(method, path, state.jwt, body);
   if (r.status === 401 && !authFailed) {
     const ok = await refreshJwt();
     if (ok) r = await rawRequest(method, path, state.jwt, body);
-    else return { status: 401, data: null };
+    else return { status: 401, data: null, headers: {} };
   }
   return r;
 }
@@ -214,6 +251,7 @@ async function enroll(): Promise<AgentState> {
     organization_id: body.organization_id,
     name: body.name,
     jwt: body.token,
+    signing_secret: body.signing_secret,
   };
   state = s;
   await saveState();
@@ -418,6 +456,14 @@ async function flushUsageOutbox(): Promise<void> {
   }
 }
 
+// A central pode reduzir/ampliar o ritmo de polling por worker (poll_interval_seconds /
+// heartbeat_interval_seconds) sem precisar de um novo deploy do runtime; ignora valores
+// fora de uma faixa sã pra não virar um vetor de negação de serviço via resposta forjada.
+function clampIntervalSeconds(value: unknown, min: number, max: number): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  return Math.min(max, Math.max(min, value)) * 1000;
+}
+
 async function heartbeatLoop(): Promise<void> {
   while (!stopping) {
     try {
@@ -445,6 +491,10 @@ async function heartbeatLoop(): Promise<void> {
             await syncConfiguration();
           if ((r.data?.commands_pending ?? 0) > 0) await processCommands();
           await flushUsageOutbox();
+          const nextPoll = clampIntervalSeconds(r.data?.poll_interval_seconds, 2, 300);
+          if (nextPoll !== null) POLL_MS = nextPoll;
+          const nextHeartbeat = clampIntervalSeconds(r.data?.heartbeat_interval_seconds, 10, 600);
+          if (nextHeartbeat !== null) HEARTBEAT_MS = nextHeartbeat;
         }
       } else {
         // Tenta recuperar a credencial periodicamente
@@ -499,7 +549,7 @@ async function runLocally(
 // ---------------------------------------------------------------------------
 async function postResultWithRetry(jobId: string, body: Record<string, unknown>): Promise<void> {
   for (let attempt = 0; attempt < 6; attempt++) {
-    const r = await api("POST", `/api/agent/jobs/${jobId}/result`, body).catch(() => ({ status: 0, data: null }));
+    const r = await api("POST", `/api/agent/jobs/${jobId}/result`, body).catch(() => ({ status: 0, data: null, headers: {} }));
     if (r.status === 200) return;
     // 403/404: lease perdido ou job finalizado por outro caminho; não insistir
     if (r.status === 403 || r.status === 404) {
@@ -518,7 +568,7 @@ async function runJob(data: { job: Record<string, unknown>; context: Record<stri
 
   const leaseMs = Math.max(5, (data.lease_seconds ?? 300) / 2) * 1000;
   const leaseTimer = setInterval(async () => {
-    const r = await api("POST", `/api/agent/jobs/${jobId}/lease`, {}).catch(() => ({ status: 0, data: null }));
+    const r = await api("POST", `/api/agent/jobs/${jobId}/lease`, {}).catch(() => ({ status: 0, data: null, headers: {} }));
     if (r.status === 409) {
       jobState.aborted = true;
       console.warn(`[cactuly] lease do job ${jobId} perdido; abortando execução local`);
@@ -589,7 +639,7 @@ async function ensureLocalQueue(): Promise<LocalQueue | null> {
   if (mode === "local") {
     dsn = DATABASE_URL!;
   } else {
-    const r = await api("GET", "/api/agent/queue-db").catch(() => ({ status: 0, data: null as any }));
+    const r = await api("GET", "/api/agent/queue-db").catch(() => ({ status: 0, data: null as any, headers: {} }));
     if (r.status !== 200 || typeof r.data?.dsn !== "string") {
       console.warn(`[cactuly] modo custom sem DSN disponível (HTTP ${r.status}); configure o banco da fila no painel`);
       return null;
@@ -632,7 +682,7 @@ async function runLocalJob(q: LocalQueue, job: LocalJob): Promise<void> {
     const payload = job.payload ?? {};
     const rc = await api("POST", "/api/agent/execution-context", {
       remote_url: String(payload.remote_url ?? ""),
-    }).catch(() => ({ status: 0, data: null as any }));
+    }).catch(() => ({ status: 0, data: null as any, headers: {} }));
     const context = (rc.data?.context ?? null) as Record<string, unknown> | null;
 
     let result: {
@@ -700,6 +750,14 @@ async function jobLoop(): Promise<void> {
       if (queueMode() === "cactuly") {
         await dropLocalQueue();
         const r = await api("GET", "/api/agent/jobs/next");
+        // Job encontrado: intervalo recomendado vem no corpo; sem job (204): vem no
+        // header X-Poll-Interval-Seconds (204 não pode ter corpo).
+        const nextPoll = clampIntervalSeconds(
+          r.status === 200 ? r.data?.poll_interval_seconds : Number(r.headers["x-poll-interval-seconds"]),
+          2,
+          300,
+        );
+        if (nextPoll !== null) POLL_MS = nextPoll;
         if (r.status === 200 && r.data?.job) {
           // Não aguarda: permite concorrência até max_concurrent_jobs
           void runJob(r.data);
