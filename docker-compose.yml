@@ -59,7 +59,7 @@ services:
     volumes:
       - agent-state:/data
 
-  # O agent-runtime executa o motor de fix embutido (Claude Code headless via
+  # O agent-runtime executa o motor de fix embutido (sessão headless via
   # Agent SDK) com credenciais efêmeras da central. A fila pode ser a central
   # (modo cactuly), o Postgres deste compose (modo local) ou um Postgres do
   # cliente (modo custom); quem define o modo é o super admin no painel.

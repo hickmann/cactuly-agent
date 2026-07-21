@@ -1,4 +1,4 @@
-// Motor de fix embutido: o mesmo motor do autofix (Claude Code headless via
+// Motor de fix embutido: o mesmo motor do autofix (sessão headless via
 // Agent SDK) rodando dentro do container do agente, sobre o repo já clonado
 // pelo git.ts. Nada roda na central; ela só entrega fila e credenciais.
 //
@@ -153,6 +153,17 @@ export async function runEngine(
       options: {
         cwd: workdir,
         allowedTools: ["Read", "Edit", "Write", "Glob", "Grep", "Bash"],
+        // Entrega (commit/push/PR) é sempre do runner, com o autor que o
+        // cliente configurou; a sessão do motor não pode tocar em git de
+        // escrita nem no gh, então nenhuma marca da sessão vai pro GitHub.
+        disallowedTools: [
+          "Bash(git commit:*)",
+          "Bash(git push:*)",
+          "Bash(git merge:*)",
+          "Bash(git rebase:*)",
+          "Bash(git tag:*)",
+          "Bash(gh:*)",
+        ],
         permissionMode: "acceptEdits",
         maxTurns,
         maxBudgetUsd,

@@ -19,7 +19,7 @@ Sua infra                         Cactuly SaaS
 
 - **postgres**: Postgres 16 local. Guarda a fila local (tabela `codeshield_jobs`, nos modos local/custom) e o histórico de execução (`agent_runs`, `tool_calls`). **Nunca sai da sua infra.**
 - **agent-runtime**: ponte com o Cactuly. Faz enroll na inicialização, salva o estado em `/data/agent-state.json`, renova o próprio JWT antes de expirar, envia heartbeat a cada 30s, sincroniza configuração versionada (com cache local pra operar em queda da central) e executa comandos remotos de uma lista fechada (pause, resume, drain, cancel_job, etc). O runtime **não executa shell**: todo comando é código próprio.
-- O motor de autofix (`engine.ts`) está embutido no próprio **agent-runtime**, executando Claude Code headless via Agent SDK; não há serviços worker ou developer separados.
+- O motor de autofix (`engine.ts`) está embutido no próprio **agent-runtime**, executando uma sessão headless de coding agent via Agent SDK; não há serviços worker ou developer separados.
 
 Segredos (chave LLM BYOK, credencial Git) são configurados no Cactuly SaaS via UI, criptografados no cofre (Supabase) e entregues **por job**, no `context` de `GET /api/agent/jobs/next`, apenas pra este agent enrolled. Cada entrega fica registrada em log de acesso. Nada fica plain-text no Cactuly nem em disco no agent.
 

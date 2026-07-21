@@ -11,7 +11,7 @@ RUN npx tsc
 
 FROM node:22-alpine AS runtime
 
-# bash e ripgrep são exigência do motor de fix (Claude Code headless);
+# bash e ripgrep são exigência do CLI headless do motor de fix;
 # USE_BUILTIN_RIPGREP=0 usa o rg do sistema (o embutido não roda em musl)
 RUN apk add --no-cache tini git bash ripgrep
 
