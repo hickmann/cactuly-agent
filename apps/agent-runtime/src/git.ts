@@ -1,10 +1,11 @@
 // Orquestração git de um job de fix: clone, checkout, engine, commit, push,
 // PR e comentário. O token chega efêmero no contexto do job e nunca vai pra
 // disco: a autenticação é via http.extraheader por comando, o remote fica limpo.
+// A conversa com a API do forge (PRs e comentários) fica no ScmProvider.
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdir, rm } from "node:fs/promises";
-import { request } from "undici";
+import { createProvider } from "./scm.js";
 
 const exec = promisify(execFile);
 
@@ -51,11 +52,10 @@ export type JobResult = {
 // ---------------------------------------------------------------------------
 // git via execFile (sem shell) com auth por header; nada de token em URL
 // ---------------------------------------------------------------------------
-async function git(cred: GitCredential | null, cwd: string | undefined, ...args: string[]): Promise<string> {
+async function git(authHeader: string | null, cwd: string | undefined, ...args: string[]): Promise<string> {
   const base: string[] = [];
-  if (cred) {
-    const basic = Buffer.from(`x-access-token:${cred.token}`).toString("base64");
-    base.push("-c", `http.extraheader=AUTHORIZATION: basic ${basic}`);
+  if (authHeader) {
+    base.push("-c", `http.extraheader=${authHeader}`);
   }
   const { stdout } = await exec("git", [...base, ...args], {
     cwd,
@@ -63,53 +63,6 @@ async function git(cred: GitCredential | null, cwd: string | undefined, ...args:
     env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
   });
   return stdout.trim();
-}
-
-function ownerRepo(url: string): { owner: string; repo: string } | null {
-  try {
-    const u = new URL(url);
-    const parts = u.pathname.replace(/^\//, "").replace(/\.git$/, "").split("/");
-    if (parts.length < 2 || !parts[0] || !parts[1]) return null;
-    return { owner: parts[0], repo: parts[1] };
-  } catch {
-    return null;
-  }
-}
-
-function parsePrUrl(prUrl: string): { owner: string; repo: string; number: number } | null {
-  const m = /^https:\/\/[^/\s]+\/([^/\s]+)\/([^/\s]+)\/pull\/(\d+)/.exec(prUrl);
-  if (!m || !m[1] || !m[2] || !m[3]) return null;
-  return { owner: m[1], repo: m[2], number: Number(m[3]) };
-}
-
-// ---------------------------------------------------------------------------
-// GitHub REST (PRs e comentários); api_base_url cobre GHE
-// ---------------------------------------------------------------------------
-async function gh(
-  cred: GitCredential,
-  method: "GET" | "POST",
-  path: string,
-  body?: unknown,
-): Promise<{ status: number; data: any }> {
-  const base = (cred.api_base_url || "https://api.github.com").replace(/\/+$/, "");
-  const res = await request(`${base}${path}`, {
-    method,
-    headers: {
-      authorization: `Bearer ${cred.token}`,
-      accept: "application/vnd.github+json",
-      "user-agent": "cactuly-agent",
-      ...(body !== undefined ? { "content-type": "application/json" } : {}),
-    },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
-  const text = await res.body.text();
-  let data: any = null;
-  try {
-    data = text ? JSON.parse(text) : null;
-  } catch {
-    data = text;
-  }
-  return { status: res.statusCode, data };
 }
 
 function changesMarkdown(changes: FixChange[]): string {
@@ -136,11 +89,11 @@ export async function executeJob(
   if (!cred?.token)
     return { status: "failed", message: "sem credencial git; configure o GitHub App ou um token na Configuração" };
 
-  const or = ownerRepo(repository.remote_url);
-  if (!or) return { status: "failed", message: `remote_url inválido: ${repository.remote_url}` };
+  const scm = createProvider(cred, repository);
+  if (!scm.remoteUrlValid()) return { status: "failed", message: `remote_url inválido: ${repository.remote_url}` };
 
   const prUrl = payload.pr_url ?? null;
-  const pr = prUrl ? parsePrUrl(prUrl) : null;
+  const pr = prUrl ? scm.parsePrUrl(prUrl) : null;
   if (prUrl && !pr) return { status: "failed", message: `pr_url inválido: ${prUrl}` };
 
   const mode = pr ? "existing_pr" : payload.branch ? "existing_branch" : "new_pr";
@@ -150,29 +103,16 @@ export async function executeJob(
   let baseBranch = repository.default_branch || "main";
   const engineInput: EngineInput = { pr_comments: [] };
   if (mode === "existing_pr" && pr) {
-    const info = await gh(cred, "GET", `/repos/${pr.owner}/${pr.repo}/pulls/${pr.number}`);
+    const info = await scm.getPr(pr);
     if (info.status !== 200)
       return { status: "failed", message: `não consegui ler o PR #${pr.number} (HTTP ${info.status}); confira o link e a permissão do token` };
-    if (!workBranch) workBranch = String(info.data?.head?.ref ?? "");
-    baseBranch = String(info.data?.base?.ref ?? baseBranch);
+    if (!workBranch) workBranch = info.headBranch;
+    baseBranch = info.baseBranch || baseBranch;
     if (!workBranch) return { status: "failed", message: "PR sem branch de origem identificável" };
 
-    // Comentários do PR são insumo do motor: gerais e de linha, ignorando os
-    // do próprio CodeShield pra não realimentar o que ele mesmo escreveu
-    const [ic, rc] = await Promise.all([
-      gh(cred, "GET", `/repos/${pr.owner}/${pr.repo}/issues/${pr.number}/comments?per_page=50`),
-      gh(cred, "GET", `/repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/comments?per_page=50`),
-    ]);
-    const fmt = (cm: any): string => {
-      const loc = cm?.path ? `${cm.path}${cm.line ? `:${cm.line}` : ""} — ` : "";
-      return `${loc}${cm?.user?.login ?? "?"}: ${String(cm?.body ?? "").trim()}`;
-    };
-    engineInput.pr_comments = [
-      ...(Array.isArray(ic.data) ? ic.data : []),
-      ...(Array.isArray(rc.data) ? rc.data : []),
-    ]
-      .filter((cm: any) => String(cm?.body ?? "").trim() && !String(cm?.body ?? "").startsWith("## CodeShield"))
-      .map(fmt);
+    // Comentários do PR são insumo do motor: gerais e de linha, já filtrados
+    // pelo provedor pra ignorar os do próprio CodeShield
+    engineInput.pr_comments = await scm.listPrComments(pr);
   }
   const cloneBranch = mode === "new_pr" ? baseBranch : workBranch!;
   if (mode === "new_pr") workBranch = `fix/codeshield-${jobId.slice(0, 8)}`;
@@ -183,7 +123,7 @@ export async function executeJob(
 
   try {
     try {
-      await git(cred, undefined, "clone", "--depth", "50", "--branch", cloneBranch, "--single-branch", "--", repository.remote_url, workdir);
+      await git(scm.cloneAuthHeader(), undefined, "clone", "--depth", "50", "--branch", cloneBranch, "--single-branch", "--", repository.remote_url, workdir);
     } catch {
       return { status: "failed", message: `clone falhou (branch ${cloneBranch}): verifique se a branch existe e se a credencial acessa o repositório` };
     }
@@ -225,7 +165,7 @@ export async function executeJob(
     const sha = await git(null, workdir, "rev-parse", "--short", "HEAD");
 
     try {
-      await git(cred, workdir, "push", "origin", `HEAD:${workBranch}`);
+      await git(scm.cloneAuthHeader(), workdir, "push", "origin", `HEAD:${workBranch}`);
     } catch {
       return { status: "failed", message: `push para a branch ${workBranch} recusado; a branch pode ter avançado ou o token não tem permissão de escrita` };
     }
@@ -235,8 +175,8 @@ export async function executeJob(
 
     if (mode === "existing_pr" && pr) {
       const body = `## CodeShield applied fixes\n\nCommit \`${sha}\` on branch \`${workBranch}\`. What changed:\n\n${lista}${rodape}`;
-      const cm = await gh(cred, "POST", `/repos/${pr.owner}/${pr.repo}/issues/${pr.number}/comments`, { body });
-      const aviso = cm.status === 201 ? "" : "; não consegui comentar no PR (confira a permissão do token)";
+      const comentou = await scm.commentOnPr(pr, body);
+      const aviso = comentou ? "" : "; não consegui comentar no PR (confira a permissão do token)";
       return {
         status: "success",
         pr_url: prUrl!,
@@ -249,30 +189,22 @@ export async function executeJob(
     // existing_branch / new_pr: abre PR (ou comenta se já existir um aberto)
     const title = `CodeShield: automated security fixes on ${workBranch}`;
     const prBody = `Security fixes applied automatically by CodeShield. What changed:\n\n${lista}${rodape}`;
-    const created = await gh(cred, "POST", `/repos/${or.owner}/${or.repo}/pulls`, {
-      title,
-      head: workBranch,
-      base: baseBranch,
-      body: prBody,
-    });
-    if (created.status === 201) {
+    const created = await scm.createPr(workBranch!, baseBranch, title, prBody);
+    if (created.outcome === "created") {
       return {
         status: "success",
-        pr_url: String(created.data?.html_url ?? ""),
+        pr_url: created.ref.webUrl,
         message: `PR aberto de ${workBranch} para ${baseBranch} (commit ${sha})`,
         findings_total: outcome.findings_total,
         findings_fixed: outcome.findings_fixed,
       };
     }
-    // 422: PR provavelmente já existe pra essa branch; encontra e comenta
-    const open = await gh(cred, "GET", `/repos/${or.owner}/${or.repo}/pulls?head=${or.owner}:${workBranch}&state=open`);
-    const existing = Array.isArray(open.data) ? open.data[0] : null;
-    if (existing?.number) {
+    if (created.outcome === "exists") {
       const body = `## CodeShield applied fixes\n\nCommit \`${sha}\`. What changed:\n\n${lista}${rodape}`;
-      await gh(cred, "POST", `/repos/${or.owner}/${or.repo}/issues/${existing.number}/comments`, { body });
+      await scm.commentOnPr(scm.prHandleFromRef(created.ref), body);
       return {
         status: "success",
-        pr_url: String(existing.html_url ?? ""),
+        pr_url: created.ref.webUrl,
         message: `correções enviadas para ${workBranch}; PR já existia, comentei as mudanças (commit ${sha})`,
         findings_total: outcome.findings_total,
         findings_fixed: outcome.findings_fixed,
@@ -280,7 +212,7 @@ export async function executeJob(
     }
     return {
       status: "partial",
-      message: `correções enviadas para ${workBranch} (commit ${sha}), mas a abertura do PR falhou (HTTP ${created.status})`,
+      message: `correções enviadas para ${workBranch} (commit ${sha}), mas a abertura do PR falhou (HTTP ${created.httpStatus})`,
       findings_total: outcome.findings_total,
       findings_fixed: outcome.findings_fixed,
     };
