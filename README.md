@@ -25,6 +25,17 @@ Segredos (chave LLM BYOK, credencial Git) são configurados no Cactuly SaaS via 
 
 Sem licença ativa (ou com a central fora do ar além da tolerância), o agent entra em **modo restrito**: para de reservar jobs novos mas termina os que já estão rodando e continua tentando sincronizar.
 
+## Provedores Git
+
+O agent trabalha com repositórios **GitHub** e **Azure DevOps Services**.
+
+A credencial Git chega efêmera, por job, no campo `git_credential` do payload de `GET /api/agent/jobs/next`. O agent usa e descarta: **nenhuma credencial é persistida**.
+
+- **GitHub**: os kinds existentes seguem inalterados.
+- **Azure DevOps**: `kind: "azure_devops"`, com `token` (PAT), `base_url` (URL da organização, ex.: `https://dev.azure.com/acme`), `project` e, opcionalmente, os campos de autor do commit (`commit_author_name`, `commit_author_email`).
+
+No Azure DevOps a autenticação é `Basic base64(":" + PAT)` injetada via `git http.extraheader` (o token nunca entra na URL do remote). PRs são criados pela REST API 7.1 e comentários de PR pela API de threads. Azure DevOps Server on-prem funciona pelo mesmo caminho: basta a `base_url` da organização apontar pro seu servidor.
+
 ## Instalação (script one-liner)
 
 ```bash
