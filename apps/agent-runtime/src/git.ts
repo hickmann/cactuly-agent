@@ -13,6 +13,10 @@ export type GitCredential = {
   kind: string;
   token: string;
   api_base_url?: string | null;
+  // Azure DevOps: URL da organização (ex.: https://dev.azure.com/acme) e
+  // projeto padrão da conexão; ignorados pelos kinds do GitHub
+  base_url?: string | null;
+  project?: string | null;
   commit_author_name?: string | null;
   commit_author_email?: string | null;
 };

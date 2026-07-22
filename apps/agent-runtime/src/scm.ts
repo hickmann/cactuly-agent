@@ -2,6 +2,7 @@
 // fluxo git do executeJob. A implementação GitHub é o código extraído de
 // git.ts; provedores novos entram por aqui sem tocar na orquestração.
 import type { GitCredential, RepositoryInfo } from "./git.js";
+import { AzureDevOpsProvider } from "./scm-azure.js";
 import { GitHubProvider } from "./scm-github.js";
 
 // Referência a um PR criado/encontrado pelo provedor
@@ -36,6 +37,7 @@ export interface ScmProvider {
 }
 
 export function createProvider(cred: GitCredential, repository: RepositoryInfo): ScmProvider {
+  if (cred.kind === "azure_devops") return new AzureDevOpsProvider(cred, repository);
   // GitHub cobre kind "pat", "github_app" e qualquer outro por enquanto
   return new GitHubProvider(cred, repository);
 }
