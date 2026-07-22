@@ -216,12 +216,12 @@ export async function executeJob(
         .split("\n")
         .map((l) => l.slice(3).trim())
         .filter(Boolean);
-      changes = files.map((f) => ({ file: f, summary: "arquivo corrigido pelo CodeShield" }));
+      changes = files.map((f) => ({ file: f, summary: "file fixed by CodeShield" }));
     }
 
     await git(null, workdir, "add", "-A");
     const commitBody = changes.map((ch) => `- ${ch.file}: ${ch.summary}`).join("\n");
-    await git(null, workdir, "commit", "-m", `CodeShield: correcoes automaticas\n\n${commitBody}`);
+    await git(null, workdir, "commit", "-m", `CodeShield: automated security fixes\n\n${commitBody}`);
     const sha = await git(null, workdir, "rev-parse", "--short", "HEAD");
 
     try {
@@ -231,10 +231,10 @@ export async function executeJob(
     }
 
     const lista = changesMarkdown(changes);
-    const rodape = payload.notes ? `\n\n> Contexto do pedido: ${payload.notes}` : "";
+    const rodape = payload.notes ? `\n\n> Request context: ${payload.notes}` : "";
 
     if (mode === "existing_pr" && pr) {
-      const body = `## CodeShield aplicou correções\n\nCommit \`${sha}\` na branch \`${workBranch}\`. O que mudou:\n\n${lista}${rodape}`;
+      const body = `## CodeShield applied fixes\n\nCommit \`${sha}\` on branch \`${workBranch}\`. What changed:\n\n${lista}${rodape}`;
       const cm = await gh(cred, "POST", `/repos/${pr.owner}/${pr.repo}/issues/${pr.number}/comments`, { body });
       const aviso = cm.status === 201 ? "" : "; não consegui comentar no PR (confira a permissão do token)";
       return {
@@ -247,8 +247,8 @@ export async function executeJob(
     }
 
     // existing_branch / new_pr: abre PR (ou comenta se já existir um aberto)
-    const title = `CodeShield: correções automáticas em ${workBranch}`;
-    const prBody = `Correções aplicadas automaticamente pelo CodeShield. O que mudou:\n\n${lista}${rodape}`;
+    const title = `CodeShield: automated security fixes on ${workBranch}`;
+    const prBody = `Security fixes applied automatically by CodeShield. What changed:\n\n${lista}${rodape}`;
     const created = await gh(cred, "POST", `/repos/${or.owner}/${or.repo}/pulls`, {
       title,
       head: workBranch,
@@ -268,7 +268,7 @@ export async function executeJob(
     const open = await gh(cred, "GET", `/repos/${or.owner}/${or.repo}/pulls?head=${or.owner}:${workBranch}&state=open`);
     const existing = Array.isArray(open.data) ? open.data[0] : null;
     if (existing?.number) {
-      const body = `## CodeShield aplicou correções\n\nCommit \`${sha}\`. O que mudou:\n\n${lista}${rodape}`;
+      const body = `## CodeShield applied fixes\n\nCommit \`${sha}\`. What changed:\n\n${lista}${rodape}`;
       await gh(cred, "POST", `/repos/${or.owner}/${or.repo}/issues/${existing.number}/comments`, { body });
       return {
         status: "success",
