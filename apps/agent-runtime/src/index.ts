@@ -523,6 +523,7 @@ async function runLocally(
   message?: string;
   findings_total?: number;
   findings_fixed?: number;
+  cost_usd?: number;
 }> {
   const ctx = context ?? {};
   console.log(
@@ -691,6 +692,7 @@ async function runLocalJob(q: LocalQueue, job: LocalJob): Promise<void> {
       message?: string;
       findings_total?: number;
       findings_fixed?: number;
+      cost_usd?: number;
     };
     if (!context) {
       result = {

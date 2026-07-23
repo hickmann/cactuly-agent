@@ -43,6 +43,7 @@ export type FixOutcome = {
   findings_total?: number;
   findings_fixed?: number;
   engine_message?: string;
+  cost_usd?: number;
 };
 
 export type JobResult = {
@@ -51,6 +52,7 @@ export type JobResult = {
   message?: string;
   findings_total?: number;
   findings_fixed?: number;
+  cost_usd?: number;
 };
 
 // ---------------------------------------------------------------------------
@@ -150,6 +152,7 @@ export async function executeJob(
         message: outcome.engine_message ?? "nenhuma mudança produzida pelo pipeline",
         findings_total: outcome.findings_total,
         findings_fixed: outcome.findings_fixed,
+        cost_usd: outcome.cost_usd,
       };
     }
 
@@ -187,6 +190,7 @@ export async function executeJob(
         message: `correções enviadas para ${workBranch} (commit ${sha})${aviso}`,
         findings_total: outcome.findings_total,
         findings_fixed: outcome.findings_fixed,
+        cost_usd: outcome.cost_usd,
       };
     }
 
@@ -201,6 +205,7 @@ export async function executeJob(
         message: `PR aberto de ${workBranch} para ${baseBranch} (commit ${sha})`,
         findings_total: outcome.findings_total,
         findings_fixed: outcome.findings_fixed,
+        cost_usd: outcome.cost_usd,
       };
     }
     if (created.outcome === "exists") {
@@ -212,6 +217,7 @@ export async function executeJob(
         message: `correções enviadas para ${workBranch}; PR já existia, comentei as mudanças (commit ${sha})`,
         findings_total: outcome.findings_total,
         findings_fixed: outcome.findings_fixed,
+        cost_usd: outcome.cost_usd,
       };
     }
     return {
@@ -219,6 +225,7 @@ export async function executeJob(
       message: `correções enviadas para ${workBranch} (commit ${sha}), mas a abertura do PR falhou (HTTP ${created.httpStatus})`,
       findings_total: outcome.findings_total,
       findings_fixed: outcome.findings_fixed,
+      cost_usd: outcome.cost_usd,
     };
   } finally {
     await rm(workdir, { recursive: true, force: true }).catch(() => {});

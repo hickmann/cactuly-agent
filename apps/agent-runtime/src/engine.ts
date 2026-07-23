@@ -212,10 +212,10 @@ export async function runEngine(
   if (touched.size === 0) {
     const msg = resultText.trim().slice(0, 600) ||
       (resultIsError ? "o motor terminou com erro sem detalhar" : "o motor não propôs mudanças");
-    return { changes: [], engine_message: `${msg}${custo}${parada}` };
+    return { changes: [], engine_message: `${msg}${custo}${parada}`, cost_usd: costUsd ?? undefined };
   }
 
   const changes = parseChanges(resultText, touched);
   console.log(`[cactuly] motor de fix: ${touched.size} arquivo(s) alterado(s)${custo}${parada}`);
-  return { changes, findings_fixed: changes.length };
+  return { changes, findings_fixed: changes.length, cost_usd: costUsd ?? undefined };
 }
