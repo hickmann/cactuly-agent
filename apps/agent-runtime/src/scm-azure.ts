@@ -104,7 +104,7 @@ export class AzureDevOpsProvider implements ScmProvider {
         headers: {
           authorization: `Basic ${Buffer.from(`:${this.cred.token}`).toString("base64")}`,
           accept: "application/json",
-          "user-agent": "cactuly-agent",
+          "user-agent": "codeshield-sast",
           ...(body !== undefined ? { "content-type": "application/json" } : {}),
         },
         body: body !== undefined ? JSON.stringify(body) : undefined,

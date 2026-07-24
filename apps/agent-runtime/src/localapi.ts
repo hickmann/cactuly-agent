@@ -1,5 +1,5 @@
 // API local de jobs (modos local/custom): permite criar e consultar análises
-// sem passar pela central. Só sobe quando CACTULY_LOCAL_API_TOKEN está
+// sem passar pela central. Só sobe quando CODESHIELD_LOCAL_API_TOKEN está
 // definido; auth Bearer com comparação em tempo constante.
 import http from "node:http";
 import { timingSafeEqual } from "node:crypto";
@@ -41,12 +41,12 @@ async function readBody(req: http.IncomingMessage): Promise<Record<string, unkno
 }
 
 export function startLocalApi(deps: LocalApiDeps): void {
-  const token = process.env.CACTULY_LOCAL_API_TOKEN;
+  const token = process.env.CODESHIELD_LOCAL_API_TOKEN ?? process.env.CACTULY_LOCAL_API_TOKEN;
   if (!token) {
-    console.log("[cactuly] API local de jobs desativada (CACTULY_LOCAL_API_TOKEN ausente)");
+    console.log("[codeshield-sast] API local de jobs desativada (CODESHIELD_LOCAL_API_TOKEN ausente)");
     return;
   }
-  const port = Number(process.env.CACTULY_LOCAL_API_PORT ?? 8484);
+  const port = Number(process.env.CODESHIELD_LOCAL_API_PORT ?? process.env.CACTULY_LOCAL_API_PORT ?? 8484);
 
   const server = http.createServer(async (req, res) => {
     try {
@@ -105,7 +105,7 @@ export function startLocalApi(deps: LocalApiDeps): void {
   });
 
   server.listen(port, "0.0.0.0", () => {
-    console.log(`[cactuly] API local de jobs escutando em 0.0.0.0:${port}`);
+    console.log(`[codeshield-sast] API local de jobs escutando em 0.0.0.0:${port}`);
   });
   server.unref();
 }

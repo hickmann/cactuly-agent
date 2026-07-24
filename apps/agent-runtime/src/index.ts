@@ -1,4 +1,4 @@
-// Cactuly agent-runtime: worker self-hosted que conversa com a central
+// CodeShield SAST agent-runtime: worker self-hosted que conversa com a central
 // exclusivamente via HTTPS outbound (nunca recebe conexão).
 //
 // Loops independentes:
@@ -31,31 +31,33 @@ const RUNTIME_VERSION = "0.3.0";
 // Bootstrap (spec 576-580): três variáveis + DATABASE_URL da infra local.
 // Nomes antigos seguem aceitos com aviso de deprecated.
 // ---------------------------------------------------------------------------
-function envOr(current: string, legacy: string): string | undefined {
+function envOr(current: string, ...legacy: string[]): string | undefined {
   if (process.env[current]) return process.env[current];
-  if (process.env[legacy]) {
-    console.warn(`[cactuly] AVISO: ${legacy} está deprecated; use ${current}`);
-    return process.env[legacy];
+  for (const name of legacy) {
+    if (process.env[name]) {
+      console.warn(`[codeshield-sast] AVISO: ${name} está deprecated; use ${current}`);
+      return process.env[name];
+    }
   }
   return undefined;
 }
 
-const API_URL = envOr("CACTULY_API_URL", "CACTULY_ENDPOINT");
+const API_URL = envOr("CODESHIELD_API_URL", "CACTULY_API_URL", "CACTULY_ENDPOINT");
 if (!API_URL) {
-  console.error("[cactuly] Env CACTULY_API_URL é obrigatório");
+  console.error("[codeshield-sast] Env CODESHIELD_API_URL é obrigatório");
   process.exit(1);
 }
 const ENROLLMENT_TOKEN = envOr("WORKER_ENROLLMENT_TOKEN", "CACTULY_ENROLLMENT_TOKEN");
 const DATA_DIR = process.env.WORKER_DATA_DIRECTORY ?? "/data";
 const DATABASE_URL = process.env.DATABASE_URL;
 if (!DATABASE_URL) {
-  console.error("[cactuly] Env DATABASE_URL é obrigatório");
+  console.error("[codeshield-sast] Env DATABASE_URL é obrigatório");
   process.exit(1);
 }
 // Valores de partida; a central pode ajustar via poll_interval_seconds /
 // heartbeat_interval_seconds nas respostas de /jobs/next e /heartbeat.
-let POLL_MS = Number(process.env.CACTULY_POLL_MS ?? 5000);
-let HEARTBEAT_MS = Number(process.env.CACTULY_HEARTBEAT_MS ?? 30000);
+let POLL_MS = Number(envOr("CODESHIELD_POLL_MS", "CACTULY_POLL_MS") ?? 5000);
+let HEARTBEAT_MS = Number(envOr("CODESHIELD_HEARTBEAT_MS", "CACTULY_HEARTBEAT_MS") ?? 30000);
 
 const STATE_FILE = `${DATA_DIR}/agent-state.json`;
 const CONFIG_CACHE_FILE = `${DATA_DIR}/config-cache.json`;
@@ -164,7 +166,7 @@ async function rawRequest(method: string, path: string, token: string, body?: un
   for (const [k, v] of Object.entries(res.headers)) resHeaders[k] = Array.isArray(v) ? v[0]! : String(v ?? "");
   if (res.statusCode === 429) {
     const retryAfter = Math.max(1, Number(resHeaders["retry-after"]) || 60);
-    console.warn(`[cactuly] 429 (rate limit) de ${path}; aguardando ${retryAfter}s`);
+    console.warn(`[codeshield-sast] 429 (rate limit) de ${path}; aguardando ${retryAfter}s`);
     await sleep(retryAfter * 1000);
   }
   if (res.statusCode === 204) return { status: 204, data: null, headers: resHeaders };
@@ -197,13 +199,13 @@ async function refreshJwt(): Promise<boolean> {
     state.jwt = r.data.token;
     await saveState();
     authFailed = false;
-    console.log("[cactuly] credencial renovada");
+    console.log("[codeshield-sast] credencial renovada");
     return true;
   }
   if (r.status === 401) {
     if (!authFailed)
       console.error(
-        "[cactuly] ERRO: credencial recusada pela central (revogada ou rotacionada). " +
+        "[codeshield-sast] ERRO: credencial recusada pela central (revogada ou rotacionada). " +
           "Parando de reservar jobs. Reemita o token no painel se necessário.",
       );
     authFailed = true;
@@ -255,7 +257,7 @@ async function enroll(): Promise<AgentState> {
   };
   state = s;
   await saveState();
-  console.log(`[cactuly] enrolled como worker=${s.name} (${s.agent_id})`);
+  console.log(`[codeshield-sast] enrolled como worker=${s.name} (${s.agent_id})`);
   return s;
 }
 
@@ -278,8 +280,8 @@ let wasRestricted = false;
 function logRestrictedTransition(): void {
   const { restricted, reason } = isRestricted();
   if (restricted && !wasRestricted)
-    console.warn(`[cactuly] modo restrito: ${reason}; jobs correntes terminam, novos não são reservados`);
-  if (!restricted && wasRestricted) console.log("[cactuly] modo restrito encerrado; operação normal");
+    console.warn(`[codeshield-sast] modo restrito: ${reason}; jobs correntes terminam, novos não são reservados`);
+  if (!restricted && wasRestricted) console.log("[codeshield-sast] modo restrito encerrado; operação normal");
   wasRestricted = restricted;
 }
 
@@ -302,7 +304,7 @@ async function reportApplied(version: number, status: "applied" | "failed" | "re
 function activateConfig(next: ConfigCache): void {
   cfg = next;
   appliedVersion = next.version;
-  console.log(`[cactuly] configuração v${next.version} aplicada (log_level=${next.config.log_level ?? "info"})`);
+  console.log(`[codeshield-sast] configuração v${next.version} aplicada (log_level=${next.config.log_level ?? "info"})`);
 }
 
 async function syncConfiguration(): Promise<void> {
@@ -333,11 +335,11 @@ async function syncConfiguration(): Promise<void> {
 
   if (mode === "restart") {
     activateConfig(next); // valores dynamic aproveitam; limites físicos não
-    console.warn("[cactuly] configuração exige recriação do container (limites de cpu/mem); recrie com docker compose up -d --force-recreate");
+    console.warn("[codeshield-sast] configuração exige recriação do container (limites de cpu/mem); recrie com docker compose up -d --force-recreate");
     await reportApplied(next.version, "requires_restart");
   } else if (mode === "drain" && runningJobs.size > 0) {
     pendingDrainApply = next;
-    console.log(`[cactuly] configuração v${next.version} aguarda fila local esvaziar (drain)`);
+    console.log(`[codeshield-sast] configuração v${next.version} aguarda fila local esvaziar (drain)`);
   } else {
     activateConfig(next);
     await reportApplied(next.version, "applied");
@@ -363,30 +365,30 @@ async function executeCommand(cmd: Command): Promise<{ ok: boolean; error?: stri
   switch (cmd.type) {
     case "pause":
       workerStatus = "paused";
-      console.log("[cactuly] comando: pause");
+      console.log("[codeshield-sast] comando: pause");
       return { ok: true };
     case "resume":
       workerStatus = "active";
       restartWhenIdle = false;
-      console.log("[cactuly] comando: resume");
+      console.log("[codeshield-sast] comando: resume");
       return { ok: true };
     case "drain":
       workerStatus = "draining";
-      console.log("[cactuly] comando: drain (termina correntes, não reserva novos)");
+      console.log("[codeshield-sast] comando: drain (termina correntes, não reserva novos)");
       return { ok: true };
     case "restart_after_jobs":
       restartWhenIdle = true;
-      console.log("[cactuly] comando: restart_after_jobs (sai quando a fila local esvaziar)");
+      console.log("[codeshield-sast] comando: restart_after_jobs (sai quando a fila local esvaziar)");
       return { ok: true };
     case "update_config":
       await syncConfiguration();
       return { ok: true };
     case "update_version":
-      console.log(`[cactuly] comando: update_version ${JSON.stringify(cmd.payload ?? {})}; atualize AGENT_RUNTIME_TAG no .env e recrie o container`);
+      console.log(`[codeshield-sast] comando: update_version ${JSON.stringify(cmd.payload ?? {})}; atualize AGENT_RUNTIME_TAG no .env e recrie o container`);
       return { ok: true };
     case "revoke":
       revoked = true;
-      console.error("[cactuly] comando: revoke; este worker foi desativado pela central");
+      console.error("[codeshield-sast] comando: revoke; este worker foi desativado pela central");
       return { ok: true };
     case "sync_license":
       // O heartbeat seguinte ressincroniza; nada extra a fazer aqui
@@ -396,7 +398,7 @@ async function executeCommand(cmd: Command): Promise<{ ok: boolean; error?: stri
       const running = runningJobs.get(jobId);
       if (running) {
         running.aborted = true;
-        console.log(`[cactuly] comando: cancel_job ${jobId} (abortando execução local)`);
+        console.log(`[codeshield-sast] comando: cancel_job ${jobId} (abortando execução local)`);
       }
       return { ok: true };
     }
@@ -405,13 +407,13 @@ async function executeCommand(cmd: Command): Promise<{ ok: boolean; error?: stri
       return { ok: true };
     case "collect_diagnostics":
       console.log(
-        `[cactuly] diagnostics: version=${RUNTIME_VERSION} uptime_s=${Math.floor(process.uptime())} ` +
+        `[codeshield-sast] diagnostics: version=${RUNTIME_VERSION} uptime_s=${Math.floor(process.uptime())} ` +
           `running_jobs=${runningJobs.size} status=${workerStatus} config_v=${appliedVersion} ` +
           `mem_rss_mb=${Math.round(process.memoryUsage().rss / 1048576)}`,
       );
       return { ok: true };
     default:
-      console.error(`[cactuly] comando desconhecido recusado: ${cmd.type}`);
+      console.error(`[codeshield-sast] comando desconhecido recusado: ${cmd.type}`);
       return { ok: false, error: `tipo não suportado: ${cmd.type}` };
   }
 }
@@ -434,6 +436,9 @@ function capabilities() {
     mem: Math.round(os.totalmem() / 1048576),
     os: process.platform,
     arch: process.arch,
+    // Declara o motor deste worker para a central rotear SAST aqui e exibir o
+    // selo certo no dashboard (labels.analysis; a central preserva labels).
+    labels: { analysis: "SAST" },
   };
 }
 
@@ -449,10 +454,10 @@ async function flushUsageOutbox(): Promise<void> {
     const accepted = Array.isArray(r.data?.accepted) ? (r.data.accepted as string[]) : [];
     if (r.status === 200 && accepted.length > 0) {
       await localQueue.usageMarkSent(accepted);
-      console.log(`[cactuly] uso reportado à central: ${accepted.length} job(s)`);
+      console.log(`[codeshield-sast] uso reportado à central: ${accepted.length} job(s)`);
     }
   } catch (err) {
-    console.warn(`[cactuly] envio de uso adiado: ${(err as Error).message}`);
+    console.warn(`[codeshield-sast] envio de uso adiado: ${(err as Error).message}`);
   }
 }
 
@@ -474,7 +479,10 @@ async function heartbeatLoop(): Promise<void> {
         let caps: Record<string, unknown> = capabilities();
         if (queueMode() !== "cactuly" && localQueue) {
           const agg = await localQueue.aggregates().catch(() => null);
-          if (agg) caps = { ...caps, labels: { queue: { mode: queueMode(), ...agg } } };
+          if (agg) {
+            const labels = (caps.labels as Record<string, unknown>) ?? {};
+            caps = { ...caps, labels: { ...labels, queue: { mode: queueMode(), ...agg } } };
+          }
         }
         const r = await api("POST", "/api/agent/heartbeat", {
           version: RUNTIME_VERSION,
@@ -501,7 +509,7 @@ async function heartbeatLoop(): Promise<void> {
         await refreshJwt();
       }
     } catch (err) {
-      console.warn(`[cactuly] heartbeat falhou (central offline?): ${(err as Error).message}`);
+      console.warn(`[codeshield-sast] heartbeat falhou (central offline?): ${(err as Error).message}`);
     }
     logRestrictedTransition();
     await sleep(HEARTBEAT_MS);
@@ -527,7 +535,7 @@ async function runLocally(
 }> {
   const ctx = context ?? {};
   console.log(
-    `[cactuly] job ${job.id}: contexto ai=${ctx.ai ? "presente" : "ausente"} ` +
+    `[codeshield-sast] job ${job.id}: contexto ai=${ctx.ai ? "presente" : "ausente"} ` +
       `git=${(ctx.git as Record<string, unknown> | null)?.kind ?? "ausente"} ` +
       `repo=${(ctx.repository as Record<string, unknown> | null)?.id ?? "n/a"}`,
   );
@@ -554,12 +562,12 @@ async function postResultWithRetry(jobId: string, body: Record<string, unknown>)
     if (r.status === 200) return;
     // 403/404: lease perdido ou job finalizado por outro caminho; não insistir
     if (r.status === 403 || r.status === 404) {
-      console.warn(`[cactuly] result do job ${jobId} recusado (${r.status}); descartando`);
+      console.warn(`[codeshield-sast] result do job ${jobId} recusado (${r.status}); descartando`);
       return;
     }
     await sleep(1000 * 2 ** attempt);
   }
-  console.error(`[cactuly] result do job ${jobId} não entregue após retries; a central vai requeue via lease`);
+  console.error(`[codeshield-sast] result do job ${jobId} não entregue após retries; a central vai requeue via lease`);
 }
 
 async function runJob(data: { job: Record<string, unknown>; context: Record<string, unknown> | null; lease_seconds: number }): Promise<void> {
@@ -572,7 +580,7 @@ async function runJob(data: { job: Record<string, unknown>; context: Record<stri
     const r = await api("POST", `/api/agent/jobs/${jobId}/lease`, {}).catch(() => ({ status: 0, data: null, headers: {} }));
     if (r.status === 409) {
       jobState.aborted = true;
-      console.warn(`[cactuly] lease do job ${jobId} perdido; abortando execução local`);
+      console.warn(`[codeshield-sast] lease do job ${jobId} perdido; abortando execução local`);
       clearInterval(leaseTimer);
     }
   }, leaseMs);
@@ -587,14 +595,14 @@ async function runJob(data: { job: Record<string, unknown>; context: Record<stri
       await postResultWithRetry(jobId, { ...result, idempotency_key: randomUUID() });
       if (result.status === "success") metrics.jobs_ok++;
       else metrics.jobs_fail++;
-      console.log(`[cactuly] job ${jobId} → ${result.status}`);
+      console.log(`[codeshield-sast] job ${jobId} → ${result.status}`);
     }
   } finally {
     clearInterval(leaseTimer);
     runningJobs.delete(jobId);
     await maybeApplyPendingDrain();
     if (restartWhenIdle && runningJobs.size === 0) {
-      console.log("[cactuly] fila local vazia; saindo para restart (docker recria o container)");
+      console.log("[codeshield-sast] fila local vazia; saindo para restart (docker recria o container)");
       process.exit(0);
     }
   }
@@ -628,7 +636,7 @@ async function ensureLocalQueue(): Promise<LocalQueue | null> {
   const mode = queueMode();
   if (mode === "cactuly") {
     if (localQueue) {
-      console.log("[cactuly] modo cactuly ativo; fechando fila local");
+      console.log("[codeshield-sast] modo cactuly ativo; fechando fila local");
       await dropLocalQueue();
     }
     return null;
@@ -642,7 +650,7 @@ async function ensureLocalQueue(): Promise<LocalQueue | null> {
   } else {
     const r = await api("GET", "/api/agent/queue-db").catch(() => ({ status: 0, data: null as any, headers: {} }));
     if (r.status !== 200 || typeof r.data?.dsn !== "string") {
-      console.warn(`[cactuly] modo custom sem DSN disponível (HTTP ${r.status}); configure o banco da fila no painel`);
+      console.warn(`[codeshield-sast] modo custom sem DSN disponível (HTTP ${r.status}); configure o banco da fila no painel`);
       return null;
     }
     dsn = r.data.dsn; // só em memória, nunca em disco
@@ -652,13 +660,13 @@ async function ensureLocalQueue(): Promise<LocalQueue | null> {
   try {
     await q.init();
   } catch (e) {
-    console.warn(`[cactuly] fila ${mode} indisponível: ${(e as Error).message}`);
+    console.warn(`[codeshield-sast] fila ${mode} indisponível: ${(e as Error).message}`);
     await q.close().catch(() => {});
     return null;
   }
   localQueue = q;
   localQueueBuiltFor = mode;
-  console.log(`[cactuly] fila local pronta (modo ${mode})`);
+  console.log(`[codeshield-sast] fila local pronta (modo ${mode})`);
   return q;
 }
 
@@ -672,7 +680,7 @@ async function runLocalJob(q: LocalQueue, job: LocalJob): Promise<void> {
     const ok = await q.renewLease(jobId, LOCAL_LEASE_SECONDS).catch(() => false);
     if (!ok) {
       jobState.aborted = true;
-      console.warn(`[cactuly] lease local do job ${jobId} perdido; abortando execução`);
+      console.warn(`[codeshield-sast] lease local do job ${jobId} perdido; abortando execução`);
       clearInterval(leaseTimer);
     }
   }, (LOCAL_LEASE_SECONDS / 2) * 1000);
@@ -716,17 +724,17 @@ async function runLocalJob(q: LocalQueue, job: LocalJob): Promise<void> {
           result.status === "failed" ? (result.message ?? null) : null,
           startedAt,
         )
-        .catch((e) => console.error(`[cactuly] report local do job ${jobId} falhou: ${(e as Error).message}`));
+        .catch((e) => console.error(`[codeshield-sast] report local do job ${jobId} falhou: ${(e as Error).message}`));
       if (result.status === "success") metrics.jobs_ok++;
       else metrics.jobs_fail++;
-      console.log(`[cactuly] job local ${jobId} → ${result.status}`);
+      console.log(`[codeshield-sast] job local ${jobId} → ${result.status}`);
     }
   } finally {
     clearInterval(leaseTimer);
     runningJobs.delete(jobId);
     await maybeApplyPendingDrain();
     if (restartWhenIdle && runningJobs.size === 0) {
-      console.log("[cactuly] fila local vazia; saindo para restart (docker recria o container)");
+      console.log("[codeshield-sast] fila local vazia; saindo para restart (docker recria o container)");
       process.exit(0);
     }
   }
@@ -766,12 +774,12 @@ async function jobLoop(): Promise<void> {
           continue;
         }
         if (r.status === 403)
-          console.warn("[cactuly] reserva recusada pela central (licença); aguardando heartbeat");
+          console.warn("[codeshield-sast] reserva recusada pela central (licença); aguardando heartbeat");
       } else {
         const q = await ensureLocalQueue();
         if (q) {
           const job = await q.claimNext(LOCAL_LEASE_SECONDS).catch(async (e) => {
-            console.warn(`[cactuly] claim na fila local falhou: ${(e as Error).message}`);
+            console.warn(`[codeshield-sast] claim na fila local falhou: ${(e as Error).message}`);
             await dropLocalQueue(); // reconecta (e refaz o fetch do DSN no custom)
             return null;
           });
@@ -782,7 +790,7 @@ async function jobLoop(): Promise<void> {
         }
       }
     } catch (err) {
-      console.warn(`[cactuly] poll de jobs falhou: ${(err as Error).message}`);
+      console.warn(`[codeshield-sast] poll de jobs falhou: ${(err as Error).message}`);
     }
     await sleep(POLL_MS);
   }
@@ -799,10 +807,10 @@ async function pingDb(): Promise<void> {
 }
 
 async function main() {
-  console.log(`[cactuly] agent-runtime v${RUNTIME_VERSION} iniciando (data dir: ${DATA_DIR})`);
+  console.log(`[codeshield-sast] agent-runtime v${RUNTIME_VERSION} iniciando (data dir: ${DATA_DIR})`);
   await mkdir(DATA_DIR, { recursive: true }).catch(() => {});
   await pingDb().catch((e) => {
-    console.error("[cactuly] Postgres local indisponível:", e.message);
+    console.error("[codeshield-sast] Postgres local indisponível:", e.message);
     process.exit(1);
   });
 
@@ -814,7 +822,7 @@ async function main() {
   if (cached) {
     cfg = cached;
     appliedVersion = cached.version;
-    console.log(`[cactuly] configuração v${cached.version} carregada do cache local`);
+    console.log(`[codeshield-sast] configuração v${cached.version} carregada do cache local`);
   }
   logRestrictedTransition();
 
@@ -824,13 +832,13 @@ async function main() {
     maxAttempts: () => Number(cfgValue("retry_max_attempts", 3)) || 3,
   });
 
-  console.log(`[cactuly] central: ${API_URL} (poll ${POLL_MS}ms, heartbeat ${HEARTBEAT_MS}ms)`);
+  console.log(`[codeshield-sast] central: ${API_URL} (poll ${POLL_MS}ms, heartbeat ${HEARTBEAT_MS}ms)`);
   await Promise.all([heartbeatLoop(), jobLoop()]);
 }
 
 for (const sig of ["SIGTERM", "SIGINT"] as const) {
   process.on(sig, () => {
-    console.log(`[cactuly] ${sig} recebido; encerrando após jobs correntes`);
+    console.log(`[codeshield-sast] ${sig} recebido; encerrando após jobs correntes`);
     stopping = true;
     setTimeout(() => process.exit(0), 5000).unref();
   });

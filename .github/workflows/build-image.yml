@@ -35,7 +35,7 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: |
-            ghcr.io/hickmann/cactuly/agent-runtime:latest
-            ghcr.io/hickmann/cactuly/agent-runtime:${{ github.sha }}
+            ghcr.io/hickmann/codeshield-sast/agent-runtime:latest
+            ghcr.io/hickmann/codeshield-sast/agent-runtime:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

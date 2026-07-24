@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Cactuly agent installer.
+# CodeShield SAST agent installer.
 # Baixa docker-compose.yml + .env.example, gera POSTGRES_PASSWORD, e sobe o compose.
 #
-#   bash <(curl -fsSL https://raw.githubusercontent.com/hickmann/cactuly-agent/main/scripts/install.sh)
+#   bash <(curl -fsSL https://raw.githubusercontent.com/hickmann/codeshield-sast/main/scripts/install.sh)
 #
 # Precisa de: docker (com compose plugin), curl, openssl.
 
 set -euo pipefail
 
-RAW="https://raw.githubusercontent.com/hickmann/cactuly-agent/main"
-DEST="${CACTULY_AGENT_DIR:-$HOME/cactuly-agent}"
+RAW="https://raw.githubusercontent.com/hickmann/codeshield-sast/main"
+DEST="${CODESHIELD_AGENT_DIR:-${CACTULY_AGENT_DIR:-$HOME/codeshield-sast}}"
 
 command -v docker >/dev/null 2>&1 || { echo "docker não encontrado. Instale antes: https://docs.docker.com/engine/install/"; exit 1; }
 docker compose version >/dev/null 2>&1 || { echo "docker compose plugin não encontrado."; exit 1; }
@@ -37,7 +37,7 @@ else
   echo "→ .env criado com POSTGRES_PASSWORD gerado."
   echo ""
   echo "‼️  Antes de subir, edite .env e cole WORKER_ENROLLMENT_TOKEN"
-  echo "   (gere em https://cactuly.com/admin > Agents > Novo agent)"
+  echo "   (gere em https://usecodeshield.com/admin > Agents > Novo agent)"
   echo ""
   echo "   Quando estiver pronto:"
   echo "     cd $DEST && docker compose up -d && docker compose logs -f agent-runtime"

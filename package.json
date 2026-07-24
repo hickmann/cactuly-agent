@@ -1,5 +1,5 @@
 {
-  "name": "codeshield-agent",
+  "name": "codeshield-sast",
   "version": "0.1.0",
   "private": true,
   "type": "module",

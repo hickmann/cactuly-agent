@@ -54,7 +54,7 @@ export class GitHubProvider implements ScmProvider {
       headers: {
         authorization: `Bearer ${cred.token}`,
         accept: "application/vnd.github+json",
-        "user-agent": "cactuly-agent",
+        "user-agent": "codeshield-sast",
         ...(body !== undefined ? { "content-type": "application/json" } : {}),
       },
       body: body !== undefined ? JSON.stringify(body) : undefined,

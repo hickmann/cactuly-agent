@@ -134,8 +134,8 @@ export async function executeJob(
       return { status: "failed", message: `clone falhou (branch ${cloneBranch}): verifique se a branch existe e se a credencial acessa o repositório` };
     }
 
-    const author = cred.commit_author_name || "Cactuly CodeShield";
-    const email = cred.commit_author_email || "codeshield@cactuly.com";
+    const author = cred.commit_author_name || "CodeShield SAST";
+    const email = cred.commit_author_email || "noreply@usecodeshield.com";
     await git(null, workdir, "config", "user.name", author);
     await git(null, workdir, "config", "user.email", email);
 

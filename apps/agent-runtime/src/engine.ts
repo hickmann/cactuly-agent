@@ -72,7 +72,7 @@ function buildPrompt(payload: JobPayload, input: EngineInput): string | null {
   if (notes) secoes.push(`Instruções de quem pediu a análise:\n${notes}`);
 
   return [
-    "Você é o CodeShield, o motor de correção automática de código da Cactuly.",
+    "Você é o CodeShield, o motor de correção automática de código.",
     "Seu único trabalho é resolver os erros apontados nos insumos abaixo. Nada além disso.",
     "Você está na raiz de um clone do repositório do cliente, na branch de trabalho correta.",
     contexto,
@@ -216,6 +216,6 @@ export async function runEngine(
   }
 
   const changes = parseChanges(resultText, touched);
-  console.log(`[cactuly] motor de fix: ${touched.size} arquivo(s) alterado(s)${custo}${parada}`);
+  console.log(`[codeshield-sast] motor de fix: ${touched.size} arquivo(s) alterado(s)${custo}${parada}`);
   return { changes, findings_fixed: changes.length, cost_usd: costUsd ?? undefined };
 }
